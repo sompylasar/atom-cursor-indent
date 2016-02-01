@@ -1,0 +1,30 @@
+{
+  "name": "atom-cursor-indent",
+  "main": "./lib/atom-cursor-indent",
+  "version": "0.0.0",
+  "description": "Makes the cursor follow the desired (auto) indentation on empty lines.",
+  "author": {
+    "name": "John Babak",
+    "email": "babak.john@gmail.com",
+    "url": "https://github.com/sompylasar"
+  },
+  "keywords": [
+    "atom-cursor-indent",
+    "atom",
+    "cursor",
+    "indent",
+    "indentation",
+    "auto-indent",
+    "virtual-whitespace",
+    "virtual",
+    "whitespace",
+    "space"
+  ],
+  "repository": "https://github.com/sompylasar/atom-cursor-indent",
+  "license": "MIT",
+  "engines": {
+    "atom": ">=1.0.0 <2.0.0"
+  },
+  "dependencies": {
+  }
+}
