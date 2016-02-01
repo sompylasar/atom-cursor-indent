@@ -1,7 +1,7 @@
 {
   "name": "atom-cursor-indent",
   "main": "./lib/atom-cursor-indent",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "Makes the cursor follow the desired (auto) indentation on empty lines.",
   "author": {
     "name": "John Babak",
@@ -25,6 +25,5 @@
   "engines": {
     "atom": ">=1.0.0 <2.0.0"
   },
-  "dependencies": {
-  }
+  "dependencies": {}
 }
