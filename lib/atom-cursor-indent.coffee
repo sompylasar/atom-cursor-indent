@@ -10,10 +10,12 @@ getLineInfo = (editor, screenRow) ->
   endBufferPos = editor.bufferPositionForScreenPosition(endScreenPos)
   bufferRange = new Range(startBufferPos, endBufferPos)
   bufferText = editor.getTextInBufferRange(bufferRange)
+  nextBufferRow = editor.bufferRowForScreenRow(screenRow + 1)
   return {
     screenText,
     bufferText,
     bufferRange,
+    softWrapped: (nextBufferRow <= endBufferPos.row),
     start: {
       screenPos: startScreenPos,
       bufferPos: startBufferPos,
@@ -25,6 +27,8 @@ getLineInfo = (editor, screenRow) ->
   }
 
 removeTrailingWhitespace = (editor, lineInfo) ->
+  if lineInfo.softWrapped
+    return
   trailingWhitespaceLength = lineInfo.bufferText.length - lineInfo.bufferText.replace(/\s+$/, '').length
   currLineEndNoWhitespaceBufferPos = new Point(lineInfo.end.bufferPos.row, lineInfo.end.bufferPos.column - trailingWhitespaceLength)
   trailingWhitespaceBufferRange = new Range(currLineEndNoWhitespaceBufferPos, lineInfo.end.bufferPos)
