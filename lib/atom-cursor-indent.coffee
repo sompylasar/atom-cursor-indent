@@ -13,6 +13,40 @@ isDebug = atom.inDevMode()
 ALL_WHITESPACE_REGEXP = /^\s*$/
 
 
+debugLog = (name) ->
+  if (isDebug)
+    console.log.apply(console, [ 'atom-cursor-indent:' + name ].concat( [].slice.call(arguments, 1) ))
+    
+    
+nextTick = () ->
+  return new Promise((resolve) ->
+    process.nextTick(resolve)
+    return
+  )
+
+
+# Run async side-effects for the editor state changes.
+# See https://github.com/atom/atom/issues/16267
+runEditorSideEffectsAsync = (runSideEffects) ->
+  return nextTick().then(() ->
+    return runSideEffects()
+  )
+
+
+# For async side effects, we need to verify the editor is still being handled.
+isHandlingEditor = (editor) ->
+  return !!editorHandlers.find((handler) -> (handler.editor == editor))
+
+
+isLineContainsSelection = (editor, lineInfo) ->
+  return editor.getSelections().filter((selection) -> !selection.isEmpty()).some((selection) -> selection.intersectsScreenRow(lineInfo.start.screenPos.row))
+
+
+shouldConsiderLine = (editor, lineInfo) ->
+  # NOTE(@sompylasar): The last line of the document seems to always be `softWrapped`.
+  return (!lineInfo.softWrapped)
+
+
 getLineInfo = (editor, screenRow) ->
   screenText = (editor.lineTextForScreenRow(screenRow) || '')
   startScreenPos = new Point(screenRow, 0)
@@ -56,7 +90,10 @@ removeTrailingWhitespace = (editor, lineInfo, keepColumn = 0) ->
   trailingWhitespaceLength = lineInfo.bufferText.length - lineInfo.bufferText.replace(/\s+$/, '').length
   currLineEndNoWhitespaceBufferPos = new Point(lineInfo.end.bufferPos.row, Math.max(keepColumn, lineInfo.end.bufferPos.column - trailingWhitespaceLength))
   trailingWhitespaceBufferRange = new Range(currLineEndNoWhitespaceBufferPos, lineInfo.end.bufferPos)
-  editor.setTextInBufferRange(trailingWhitespaceBufferRange, '', { undo: 'skip' })
+  trailingWhitespaceBufferText = editor.getTextInBufferRange(trailingWhitespaceBufferRange)
+  if (trailingWhitespaceBufferText != '')
+    editor.setTextInBufferRange(trailingWhitespaceBufferRange, '', { undo: 'skip' })
+    return true
   return
 
 
@@ -64,77 +101,135 @@ removeIndentWhitespace = (editor, lineInfo) ->
   if (!ALL_WHITESPACE_REGEXP.test(lineInfo.bufferText))
     return
 
-  bufferRange = new Range(lineInfo.start.bufferPos, lineInfo.end.bufferPos)
-  editor.setTextInBufferRange(bufferRange, '', { undo: 'skip' })
+  lineBufferRange = new Range(lineInfo.start.bufferPos, lineInfo.end.bufferPos)
+  lineBufferText = lineInfo.bufferText
+  if (lineBufferText != '')
+    editor.setTextInBufferRange(lineBufferRange, '', { undo: 'skip' })
+    return true
   return
 
 
 # NOTE(@sompylasar): `setIndentationForBufferRow` doesn't pass the `undo: 'skip'` option to `buffer.setTextInRange`. https://github.com/atom/atom/blob/42509544b65472b7742c2ac34a2c88aa7e996617/src/text-editor.js#L3480
 setIndentationForBufferRowWithoutUndo = (editor, bufferRow, newLevel) ->
-  endColumn = editor.lineTextForBufferRow(bufferRow).match(/^\s*/)[0].length
-  newIndentString = editor.buildIndentString(newLevel)
-  editor.setTextInBufferRange([[bufferRow, 0], [bufferRow, endColumn]], newIndentString, { undo: 'skip' })
-  return true
+  prevIndentString = editor.lineTextForBufferRow(bufferRow).match(/^\s*/)[0]
+  nextIndentString = editor.buildIndentString(newLevel)
+  if (nextIndentString != prevIndentString)
+    debugLog('setIndentationForBufferRowWithoutUndo', editor.getTitle(), editor.getPath(), {
+      prevIndentString: prevIndentString,
+      nextIndentString: nextIndentString,
+    })
+    prevIndentBufferRange = [[bufferRow, 0], [bufferRow, prevIndentString.length]]
+    editor.setTextInBufferRange(prevIndentBufferRange, nextIndentString, { undo: 'skip' })
+    return true
+  return
 
 
-autoIndentLine = (editor, lineInfo, desiredColumn) ->
+autoIndentLine = (editor, lineInfo, desiredColumn, cursor) ->
   if (!ALL_WHITESPACE_REGEXP.test(lineInfo.bufferText))
     return
 
+  if (isLineContainsSelection(editor, lineInfo))
+    return
+
   bufferRow = lineInfo.end.bufferPos.row
-  screenRow = lineInfo.end.screenPos.row
+
   currIndentLevel = editor.indentationForBufferRow(bufferRow)
   suggestedIndentLevel = editor.suggestedIndentForBufferRow(bufferRow)
+  editorTabLength = editor.getTabLength()
   if (desiredColumn >= 0)
-    suggestedIndentLevel = Math.floor(desiredColumn / editor.getTabLength())
+    suggestedIndentLevel = Math.floor(desiredColumn / editorTabLength)
 
-  if (isDebug)
-    console.log('atom-cursor-indent:autoIndentLine', editor.getTitle(), editor.getPath(), 'desiredColumn ==', desiredColumn, 'currIndentLevel ==', currIndentLevel, 'suggestedIndentLevel ==', suggestedIndentLevel)
+  debugLog('autoIndentLine', editor.getTitle(), editor.getPath(), {
+    bufferRow: bufferRow,
+    desiredColumn: desiredColumn,
+    currIndentLevel: currIndentLevel,
+    editorTabLength: editorTabLength,
+    suggestedIndentLevel: suggestedIndentLevel,
+  })
 
   if (currIndentLevel < suggestedIndentLevel)
-    return setIndentationForBufferRowWithoutUndo(editor, bufferRow, suggestedIndentLevel)
+    debugLog('autoIndentLine', editor.getTitle(), editor.getPath(), 'currIndentLevel < suggestedIndentLevel, setIndentationForBufferRowWithoutUndo()')
+    hasChanged = setIndentationForBufferRowWithoutUndo(editor, bufferRow, suggestedIndentLevel)
+    if (hasChanged && cursor)
+      debugLog('autoIndentLine', editor.getTitle(), editor.getPath(), 'hasChanged, cursor.moveToEndOfScreenLine()')
+      cursor.moveToEndOfLine()
+    return hasChanged
 
   return
-
-
-shouldConsiderLine = (editor, lineInfo) ->
-  # NOTE(@sompylasar): The last line of the document seems to always be `softWrapped`.
-  return (!lineInfo.softWrapped)
 
 
 handleAddCursor = (editor, cursor) ->
-  screenRow = cursor.getScreenRow()
-  lineInfo = getLineInfo(editor, screenRow)
+  debugLog('handleAddCursor', editor.getTitle(), editor.getPath(), {
+  })
 
-  if (isDebug)
-    console.log('atom-cursor-indent:handleAddCursor', editor.getTitle(), editor.getPath(), 'screenRow ==', screenRow)
+  runEditorSideEffectsForAddCursor = () ->
+    if (!isHandlingEditor(editor))
+      return
 
-  if (shouldConsiderLine(editor, lineInfo))
-    cursorsOnTheSameLine = editor.getCursors().filter((c) -> (c != cursor && c.getScreenRow() == screenRow))
-    if (cursorsOnTheSameLine.length <= 0 && autoIndentLine(editor, lineInfo))
-      cursor.moveToEndOfScreenLine()
+    screenRow = cursor.getScreenRow()
 
-  return
+    lineInfo = getLineInfo(editor, screenRow)
+    lineShouldConsider = shouldConsiderLine(editor, lineInfo)
+    if (!lineShouldConsider)
+      return
+
+    cursorsOnTheSameLineLength = editor.getCursors().filter((c) -> (c != cursor && c.getScreenRow() == screenRow)).length
+
+    debugLog('handleAddCursor:runEditorSideEffectsForAddCursor', editor.getTitle(), editor.getPath(), {
+      screenRow: screenRow,
+      lineInfo: lineInfo,
+      lineShouldConsider: lineShouldConsider,
+      cursorsOnTheSameLineLength: cursorsOnTheSameLineLength,
+    })
+
+    if (cursorsOnTheSameLineLength <= 0)
+      autoIndentLine(editor, lineInfo)
+
+    return
+
+  return runEditorSideEffectsAsync(runEditorSideEffectsForAddCursor)
 
 
 handleRemoveCursor = (editor, cursor) ->
   screenRow = cursor.marker.oldTailScreenPosition.row
-  lineInfo = getLineInfo(editor, screenRow)
 
-  if (isDebug)
-    console.log('atom-cursor-indent:handleRemoveCursor', editor.getTitle(), editor.getPath(), 'screenRow ==', screenRow)
+  debugLog('handleRemoveCursor', editor.getTitle(), editor.getPath(), {
+    screenRow: screenRow,
+  })
 
-  if (shouldConsiderLine(editor, lineInfo))
+  runEditorSideEffectsForRemoveCursor = () ->
+    if (!isHandlingEditor(editor))
+      return
+
+    lineInfo = getLineInfo(editor, screenRow)
+    lineShouldConsider = shouldConsiderLine(editor, lineInfo)
+    if (!lineShouldConsider)
+      return
+
     cursorsOnTheSameLine = editor.getCursors().filter((c) -> (c != cursor && c.getScreenRow() == screenRow))
+
+    rightmostCursorOnTheSameLineScreenColumn = -1
     if (cursorsOnTheSameLine.length > 0)
       cursorsOnTheSameLine.sort((left, right) -> (left.getScreenPosition().column - right.getScreenPosition().column))
-      rightmostCursor = cursorsOnTheSameLine[cursorsOnTheSameLine.length - 1]
-      removeTrailingWhitespace(editor, lineInfo, rightmostCursor.getScreenPosition().column)
+      rightmostCursorOnTheSameLine = cursorsOnTheSameLine[cursorsOnTheSameLine.length - 1]
+      rightmostCursorOnTheSameLineScreenColumn = rightmostCursorOnTheSameLine.getScreenPosition().column
+
+    debugLog('handleRemoveCursor:runEditorSideEffectsForRemoveCursor', editor.getTitle(), editor.getPath(), {
+      screenRow: screenRow,
+      lineInfo: lineInfo,
+      lineShouldConsider: lineShouldConsider,
+      rightmostCursorOnTheSameLineScreenColumn: rightmostCursorOnTheSameLineScreenColumn,
+    })
+
+    if (rightmostCursorOnTheSameLineScreenColumn >= 0)
+      removeTrailingWhitespace(editor, lineInfo, rightmostCursorOnTheSameLineScreenColumn)
     else
       removeIndentWhitespace(editor, lineInfo)
       removeTrailingWhitespace(editor, lineInfo)
 
-  return
+    return
+
+  return runEditorSideEffectsAsync(runEditorSideEffectsForRemoveCursor)
 
 
 handleChangeCursorPosition = (editor, event) ->
@@ -143,36 +238,66 @@ handleChangeCursorPosition = (editor, event) ->
 
   cursor = event.cursor
   prevScreenRow = event.oldScreenPosition.row
-  nextScreenRow = event.newScreenPosition.row
+  prevScreenColumn = event.oldScreenPosition.column
 
-  backspacedToColumn = -1
-  if (nextScreenRow == prevScreenRow && event.newScreenPosition.column < event.oldScreenPosition.column)
-    backspacedToColumn = event.newScreenPosition.column
+  debugLog('handleChangeCursorPosition', editor.getTitle(), editor.getPath(), {
+    prevScreenRow: prevScreenRow,
+    prevScreenColumn: prevScreenColumn,
+  })
 
-  prevLineInfo = getLineInfo(editor, prevScreenRow)
-  nextLineInfo = getLineInfo(editor, nextScreenRow)
+  runEditorSideEffectsForChangeCursorPosition = () ->
+    if (!isHandlingEditor(editor))
+      return
 
-  if (isDebug)
-    console.log('atom-cursor-indent:handleChangeCursorPosition', editor.getTitle(), editor.getPath(), 'prevScreenRow ==', prevScreenRow, 'nextScreenRow ==', nextScreenRow)
+    nextScreenRow = cursor.getScreenRow()
+    nextScreenColumn = cursor.getScreenColumn()
 
-  if (shouldConsiderLine(editor, prevLineInfo))
-    removeIndentWhitespace(editor, prevLineInfo)
-    removeTrailingWhitespace(editor, prevLineInfo)
+    backspacedToColumn = -1
+    if (nextScreenRow == prevScreenRow && nextScreenColumn < prevScreenColumn)
+      backspacedToColumn = nextScreenColumn
 
-  if (shouldConsiderLine(editor, nextLineInfo))
-    if (autoIndentLine(editor, nextLineInfo, backspacedToColumn))
-      cursor.moveToEndOfScreenLine()
+    prevLineInfo = getLineInfo(editor, prevScreenRow)
+    nextLineInfo = getLineInfo(editor, nextScreenRow)
 
-  return
+    prevLineShouldConsider = shouldConsiderLine(editor, prevLineInfo)
+    nextLineShouldConsider = shouldConsiderLine(editor, nextLineInfo)
+
+    debugLog('handleChangeCursorPosition:runEditorSideEffectsForChangeCursorPosition', editor.getTitle(), editor.getPath(), {
+      prevScreenRow: prevScreenRow,
+      prevScreenColumn: prevScreenColumn,
+      nextScreenRow: nextScreenRow,
+      nextScreenColumn: nextScreenColumn,
+      backspacedToColumn: backspacedToColumn,
+      prevLineInfo: prevLineInfo,
+      nextLineInfo: nextLineInfo,
+      prevLineShouldConsider: prevLineShouldConsider,
+      nextLineShouldConsider: nextLineShouldConsider,
+    })
+
+    if (prevLineShouldConsider && (nextScreenRow != prevScreenRow || !nextLineShouldConsider))
+      removeIndentWhitespace(editor, prevLineInfo)
+      removeTrailingWhitespace(editor, prevLineInfo)
+
+    if (nextLineShouldConsider)
+      autoIndentLine(editor, nextLineInfo, backspacedToColumn, cursor)
+
+    return
+
+  return runEditorSideEffectsAsync(runEditorSideEffectsForChangeCursorPosition)
 
 
 cleanupBeforeSave = (editor) ->
-  if (isDebug)
-    console.log('atom-cursor-indent:cleanupBeforeSave', editor.getTitle(), editor.getPath())
+  debugLog('cleanupBeforeSave', editor.getTitle(), editor.getPath())
 
-  # Remove the indentation before saving.
-  editor.getCursors().forEach((cursor) -> handleRemoveCursor(editor, cursor))
-  return
+  # Remove the indentation before saving as if the cursors were removed.
+  return Promise.all(editor.getCursors().map((cursor) -> handleRemoveCursor(editor, cursor)))
+
+
+ensurePromiseAndErrorHandling = (name, func) ->
+  return Promise.resolve().then(() -> func()).catch((error) ->
+    console.error('atom-cursor-indent:' + name, editor.getTitle(), editor.getPath(), error)
+    return
+  ).catch(() -> Promise.resolve())
 
 
 createEditorHandler = (editor, params) ->
@@ -182,43 +307,25 @@ createEditorHandler = (editor, params) ->
   handler = {
     editor: editor,
     dispose: () ->
+      params.onWillDispose(handler)
       subscriptionsForEditor.dispose()
-      params.onDispose(handler)
       return
   }
 
   onDidAddCursor = (cursor) ->
-    handleAddCursor(editor, cursor)
+    ensurePromiseAndErrorHandling('onDidAddCursor', () -> handleAddCursor(editor, cursor))
     return
 
   onDidRemoveCursor = (cursor) ->
-    handleRemoveCursor(editor, cursor)
+    ensurePromiseAndErrorHandling('onDidRemoveCursor', () -> handleRemoveCursor(editor, cursor))
     return
 
   onDidChangeCursorPosition = (event) ->
-    # Prevent recursion.
-    if (handling)
-      return
-    handling = true
-    try
-      handleChangeCursorPosition(editor, event)
-    finally
-      handling = false
+    ensurePromiseAndErrorHandling('onDidChangeCursorPosition', () -> handleChangeCursorPosition(editor, event))
     return
 
   onWillSave = () ->
-    # Prevent recursion.
-    if (handling)
-      return
-    handling = true
-    try
-      cleanupBeforeSave(editor)
-    catch ex
-      # NOTE(@sompylasar): Catch here to proceed with saving regardless of a potential exception.
-      console.error('atom-cursor-indent:onWillSave', editor.getTitle(), editor.getPath(), ex)
-    finally
-      handling = false
-    return
+    return ensurePromiseAndErrorHandling('onWillSave', () -> cleanupBeforeSave(editor))
 
   onDidDestroy = () ->
     handler.dispose()
@@ -232,36 +339,32 @@ createEditorHandler = (editor, params) ->
   return handler
 
 
-onEditorHandlerDispose = (handler) ->
-  if (isDebug)
-    console.log('atom-cursor-indent:onEditorHandlerDispose', handler.editor.getTitle(), handler.editor.getPath())
+onEditorHandlerWillDispose = (handler) ->
+  debugLog('onEditorHandlerWillDispose', handler.editor.getTitle(), handler.editor.getPath())
 
   editorHandlers.splice(editorHandlers.indexOf(handler), 1)
   return
 
 
 onNewEditor = (editor) ->
-  if (isDebug)
-    console.log('atom-cursor-indent:onNewEditor', editor.getTitle(), editor.getPath())
+  debugLog('onNewEditor', editor.getTitle(), editor.getPath())
 
   editorHandlers.push(createEditorHandler(editor, {
-    onDispose: onEditorHandlerDispose
+    onWillDispose: onEditorHandlerWillDispose
   }))
   return
 
 
 # exports
 module.exports.activate = () ->
-  if (isDebug)
-    console.log('atom-cursor-indent:activate')
+  debugLog('activate')
 
   subscriptions.add(atom.workspace.observeTextEditors(onNewEditor))
   return
 
 
 module.exports.deactivate = () ->
-  if (isDebug)
-    console.log('atom-cursor-indent:deactivate')
+  debugLog('deactivate')
 
   subscriptions.dispose()
   editorHandlers.forEach((handler) -> handler.dispose())
