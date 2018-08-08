@@ -93,7 +93,7 @@ removeTrailingWhitespace = (editor, lineInfo, keepColumn = 0) ->
   trailingWhitespaceBufferText = editor.getTextInBufferRange(trailingWhitespaceBufferRange)
   if (trailingWhitespaceBufferText != '')
     editor.setTextInBufferRange(trailingWhitespaceBufferRange, '')
-    editor.groupLastChanges()
+    editor.buffer.groupLastChanges()
     return true
   return
 
@@ -106,7 +106,7 @@ removeIndentWhitespace = (editor, lineInfo) ->
   lineBufferText = lineInfo.bufferText
   if (lineBufferText != '')
     editor.setTextInBufferRange(lineBufferRange, '')
-    editor.groupLastChanges()
+    editor.buffer.groupLastChanges()
     return true
   return
 
@@ -122,7 +122,7 @@ setIndentationForBufferRowWithoutUndo = (editor, bufferRow, newLevel) ->
     })
     prevIndentBufferRange = [[bufferRow, 0], [bufferRow, prevIndentString.length]]
     editor.setTextInBufferRange(prevIndentBufferRange, nextIndentString)
-    editor.groupLastChanges()
+    editor.buffer.groupLastChanges()
     return true
   return
 
