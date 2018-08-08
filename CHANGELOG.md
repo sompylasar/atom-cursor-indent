@@ -1,2 +1,3 @@
-## 0.1.0 - First Release
-* When the cursor moves to an empty line, the line is auto-indented.
+# CHANGELOG
+
+See https://github.com/sompylasar/atom-cursor-indent/releases
