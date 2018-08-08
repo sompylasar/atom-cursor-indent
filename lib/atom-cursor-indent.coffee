@@ -16,8 +16,8 @@ ALL_WHITESPACE_REGEXP = /^\s*$/
 debugLog = (name) ->
   if (isDebug)
     console.log.apply(console, [ 'atom-cursor-indent:' + name ].concat( [].slice.call(arguments, 1) ))
-    
-    
+
+
 nextTick = () ->
   return new Promise((resolve) ->
     process.nextTick(resolve)
@@ -92,7 +92,8 @@ removeTrailingWhitespace = (editor, lineInfo, keepColumn = 0) ->
   trailingWhitespaceBufferRange = new Range(currLineEndNoWhitespaceBufferPos, lineInfo.end.bufferPos)
   trailingWhitespaceBufferText = editor.getTextInBufferRange(trailingWhitespaceBufferRange)
   if (trailingWhitespaceBufferText != '')
-    editor.setTextInBufferRange(trailingWhitespaceBufferRange, '', { undo: 'skip' })
+    editor.setTextInBufferRange(trailingWhitespaceBufferRange, '')
+    editor.buffer.groupLastChanges()
     return true
   return
 
@@ -104,7 +105,8 @@ removeIndentWhitespace = (editor, lineInfo) ->
   lineBufferRange = new Range(lineInfo.start.bufferPos, lineInfo.end.bufferPos)
   lineBufferText = lineInfo.bufferText
   if (lineBufferText != '')
-    editor.setTextInBufferRange(lineBufferRange, '', { undo: 'skip' })
+    editor.setTextInBufferRange(lineBufferRange, '')
+    editor.buffer.groupLastChanges()
     return true
   return
 
@@ -119,7 +121,8 @@ setIndentationForBufferRowWithoutUndo = (editor, bufferRow, newLevel) ->
       nextIndentString: nextIndentString,
     })
     prevIndentBufferRange = [[bufferRow, 0], [bufferRow, prevIndentString.length]]
-    editor.setTextInBufferRange(prevIndentBufferRange, nextIndentString, { undo: 'skip' })
+    editor.setTextInBufferRange(prevIndentBufferRange, nextIndentString)
+    editor.buffer.groupLastChanges()
     return true
   return
 
